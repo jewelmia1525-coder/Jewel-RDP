@@ -6,83 +6,41 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 60  # Adjusted timeout to 1 hour for typical RDP setup time
+    timeout-minutes: 60
 
     steps:
       - name: Configure Core RDP Settings
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
-
-          # Remove any existing rule with the same name to avoid duplication
-          $rule = netsh advfirewall firewall show rule name="RDP-Tailscale"
-          if ($rule) {
-            netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          }
-
-          # Allow incoming connection on port 3389 for RDP
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
-
-          # Restart the Remote Desktop service to ensure changes take effect
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User with Secure Password
+      - name: Create RDP User and SHOW password
         run: |
-          Add-Type -AssemblyName System.Security
+          $Upper   = [char[]](65..90)
+          $Lower   = [char[]](97..122)
+          $Number  = [char[]](48..57)
+          $Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
 
-          # Define character sets for password generation
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
+          $raw = @()
+          $raw += $Upper   | Get-Random -Count 4
+          $raw += $Lower   | Get-Random -Count 4
+          $raw += $Number  | Get-Random -Count 4
+          $raw += $Special | Get-Random -Count 4
 
-          # Generate a secure password with random characters
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($raw | Sort-Object { Get-Random })
 
-          # Shuffle and combine password parts
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-
-          # Convert to secure string
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-
-          # Create the user "RDP" with the generated password
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-
-          # Add the user to the required groups (Administrators & Remote Desktop Users)
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $secure -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-          # Output the credentials for later use (don't expose in logs in real-world use!)
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          Write-Host "=============================="
+          Write-Host "RDP USERNAME: RDP"
+          Write-Host "RDP PASSWORD: $password"
+          Write-Host "=============================="
 
-      - name: Verify RDP Configuration
+      - name: Show RDP status
         run: |
-          # Ensure RDP service is running
-          $rdpService = Get-Service -Name "TermService"
-          if ($rdpService.Status -ne 'Running') {
-              Write-Host "RDP Service is not running. Starting service..."
-              Start-Service -Name "TermService"
-          } else {
-              Write-Host "RDP Service is running."
-          }
-
-          # Check if RDP port (3389) is open
-          $portStatus = Test-NetConnection -ComputerName localhost -Port 3389
-          if ($portStatus.TcpTestSucceeded) {
-              Write-Host "Port 3389 is open and RDP is accessible."
-          } else {
-              Write-Host "Port 3389 is not open. Please check firewall rules."
-          }
+          Get-Service TermService
+          Test-NetConnection localhost -Port 3389
